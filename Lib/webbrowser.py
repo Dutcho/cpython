@@ -103,6 +103,52 @@ def open_new_tab(url):
     return open(url, 2)
 
 
+def _open_from_stdin(new=0, autoraise=True):
+    """Open HTML content from standard input in default browser."""
+
+    # import here instead of top because only required in specific case
+    import tempfile
+    import time
+
+    if sys.stdin.isatty():
+        print("Enter HTML content; end by end-of-file marker",
+              "(^Z)" if sys.platform.casefold().startswith('win') else "(^D)")
+    html_data = sys.stdin.read()
+    # needs conversion as `os.write()` expects `bytes`
+    binary_data = html_data.encode(sys.stdin.encoding)
+
+    # cannot use `TemporaryFile` as temp file is needed *after* `os.close()`
+    handle, pathname = tempfile.mkstemp(suffix='.html')
+    try:
+        try:
+            os.write(handle, binary_data)
+        finally:
+            # to enable `os.remove()` even when `os.write()` fails
+            # temp file will persist after `os.close()`
+            os.close(handle)
+
+        # open browser with local url
+        open(pathname, new=new, autoraise=autoraise)
+
+    # to clean-up even when failed
+    finally:
+        # 'hope' this suffices # TODO gather better pragmatics on timing
+        seconds = 4
+        while True:
+            # wait for start-up and read HTML before `os.remove()`
+            time.sleep(seconds)
+            try:
+                # browser is assumed to read non-exclusively
+                os.remove(pathname)
+                break
+            except PermissionError as exc:
+                # browser hasn't completed reading large HTML data
+                # exponentially wait longer for browser to complete
+                seconds *= 2
+                print("cannot remove", pathname, "yet -", exc, "-",
+                      "Wait", seconds, "sec and retry", file=sys.stderr)
+
+
 def _synthesize(browser, *, preferred=False):
     """Attempt to synthesize a controller based on existing controllers.
 
@@ -709,7 +755,7 @@ if sys.platform == 'darwin':
 
 def main():
     import getopt
-    usage = """Usage: %s [-n | -t] url
+    usage = """Usage: %s [-n | -t] [url]
     -n: open new window
     -t: open new tab""" % sys.argv[0]
     try:
@@ -722,12 +768,15 @@ def main():
     for o, a in opts:
         if o == '-n': new_win = 1
         elif o == '-t': new_win = 2
-    if len(args) != 1:
+    if len(args) > 1:
         print(usage, file=sys.stderr)
         sys.exit(1)
 
-    url = args[0]
-    open(url, new_win)
+    if args:
+        url = args[0]
+        open(url, new_win)
+    else:
+        _open_from_stdin(new_win)
 
     print("\a")
 
